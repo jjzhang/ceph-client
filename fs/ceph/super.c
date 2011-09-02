@@ -758,7 +758,6 @@ static int ceph_compare_super(struct super_block *sb, void *data)
 	struct ceph_fs_client *other = ceph_sb_to_client(sb);
 
 	dout("ceph_compare_super %p\n", sb);
-
 	if (compare_mount_options(fsopt, opt, other)) {
 		dout("monitor(s)/mount options don't match\n");
 		return 0;
