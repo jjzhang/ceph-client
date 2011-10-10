@@ -403,8 +403,17 @@ relock:
 
 	if (ref)
 		dentry->d_count--;
+
 	/* if dentry was on the d_lru list delete it from there */
 	dentry_lru_del(dentry);
+
+	/*
+	 * inform the fs this dentry is about to be unhashed
+	 * and destroyed.
+	 */
+	if (dentry->d_flags & DCACHE_OP_PRUNE)
+		dentry->d_op->d_prune(dentry);
+
 	/* if it was on the hash then remove it */
 	__d_drop(dentry);
 	return d_kill(dentry, parent);
@@ -854,8 +863,16 @@ static void shrink_dcache_for_umount_subtree(struct dentry *dentry)
 		do {
 			struct inode *inode;
 
-			/* detach from the system */
+			/* remove the dentry from the lru */
 			dentry_lru_del(dentry);
+
+			/*
+			 * inform the fs that this dentry is about to be
+			 * unhashed and destroyed.
+			 */
+			if (dentry->d_flags & DCACHE_OP_PRUNE)
+				dentry->d_op->d_prune(dentry);
+
 			__d_shrink(dentry);
 
 			if (dentry->d_count != 0) {
@@ -1283,6 +1300,8 @@ void d_set_d_op(struct dentry *dentry, const struct dentry_operations *op)
 		dentry->d_flags |= DCACHE_OP_REVALIDATE;
 	if (op->d_delete)
 		dentry->d_flags |= DCACHE_OP_DELETE;
+	if (op->d_prune)
+		dentry->d_flags |= DCACHE_OP_PRUNE;
 
 }
 EXPORT_SYMBOL(d_set_d_op);
