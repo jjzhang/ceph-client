@@ -158,9 +158,13 @@ struct rbd_device {
 
 	/* protects updating the header */
 	struct rw_semaphore     header_rwsem;
+	/* name of the snapshot this device reads from */
 	char                    snap_name[RBD_MAX_SNAP_NAME_LEN];
+	/* id of the snapshot this device reads from */
 	u64                     snap_id;
-	int read_only;
+	/* whether the snap_id this device reads from still exists */
+	bool                    snap_exists;
+	int                     read_only;
 
 	struct list_head	node;
 
@@ -561,6 +565,7 @@ static int rbd_header_set_snap(struct rbd_device *dev,
 		if (ret < 0)
 			goto done;
 		dev->snap_id = snapc->seq;
+		dev->snap_exists = true;
 		dev->read_only = 1;
 	}
 
@@ -1432,6 +1437,20 @@ static void rbd_rq_fn(struct request_queue *q)
 
 		spin_unlock_irq(q->queue_lock);
 
+		if (rbd_dev->snap_id != CEPH_NOSNAP) {
+			bool snap_exists;
+			down_read(&rbd_dev->header_rwsem);
+			snap_exists = rbd_dev->snap_exists;
+			up_read(&rbd_dev->header_rwsem);
+
+			if (!snap_exists) {
+				dout("request for non-existent snapshot");
+				spin_lock_irq(q->queue_lock);
+				__blk_end_request_all(rq, -ENXIO);
+				goto next;
+			}
+		}
+
 		dout("%s 0x%x bytes at 0x%llx\n",
 		     do_write ? "write" : "read",
 		     size, blk_rq_pos(rq) * 512ULL);
@@ -2014,6 +2033,7 @@ static int __rbd_init_snaps_header(struct rbd_device *rbd_dev)
 		if (!i || old_snap->id < cur_id) {
 			/* old_snap->id was skipped, thus was removed */
 			__rbd_remove_snap_dev(rbd_dev, old_snap);
+			rbd_dev->snap_exists = false;
 			continue;
 		}
 		if (old_snap->id == cur_id) {
