@@ -1682,6 +1682,7 @@ static int __rbd_update_snaps(struct rbd_device *rbd_dev)
 
 	snap_seq = rbd_dev->header.snapc->seq;
 	if (rbd_dev->header.total_snaps &&
+	    rbd_dev->snap_id == CEPH_NOSNAP &&
 	    rbd_dev->header.snapc->snaps[0] == snap_seq)
 		/* pointing at the head, will need to follow that
 		   if head moves */
