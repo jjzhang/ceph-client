@@ -548,10 +548,7 @@ static int rbd_header_set_snap(struct rbd_device *dev,
 
 	down_write(&dev->header_rwsem);
 
-	if (!snap_name ||
-	    !*snap_name ||
-	    strcmp(snap_name, "-") == 0 ||
-	    strcmp(snap_name, RBD_SNAP_HEAD_NAME) == 0) {
+	if (strcmp(snap_name, RBD_SNAP_HEAD_NAME) == 0) {
 		if (header->total_snaps)
 			snapc->seq = header->snap_seq;
 		else
@@ -2211,7 +2208,8 @@ static ssize_t rbd_add(struct bus_type *bus,
 	}
 
 	if (rbd_dev->snap_name[0] == 0)
-		rbd_dev->snap_name[0] = '-';
+		strncpy(rbd_dev->snap_name, RBD_SNAP_HEAD_NAME,
+			strlen(RBD_SNAP_HEAD_NAME));
 
 	rbd_dev->obj_len = strlen(rbd_dev->obj);
 	snprintf(rbd_dev->obj_md_name, sizeof(rbd_dev->obj_md_name), "%s%s",
