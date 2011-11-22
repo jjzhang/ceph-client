@@ -1673,7 +1673,10 @@ static int __rbd_update_snaps(struct rbd_device *rbd_dev)
 		return ret;
 
 	/* resized? */
-	set_capacity(rbd_dev->disk, h.image_size / 512ULL);
+	if (rbd_dev->snap_id == CEPH_NOSNAP) {
+		dout("setting size to %llu sectors", h.image_size / 512ULL);
+		set_capacity(rbd_dev->disk, h.image_size / 512ULL);
+	}
 
 	down_write(&rbd_dev->header_rwsem);
 
