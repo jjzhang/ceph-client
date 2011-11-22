@@ -66,7 +66,6 @@ struct rbd_image_header {
 	__u8 obj_order;
 	__u8 crypt_type;
 	__u8 comp_type;
-	struct rw_semaphore snap_rwsem;
 	struct ceph_snap_context *snapc;
 	size_t snap_names_len;
 	u64 snap_seq;
@@ -157,6 +156,8 @@ struct rbd_device {
 	struct ceph_osd_event   *watch_event;
 	struct ceph_osd_request *watch_request;
 
+	/* protects updating the header */
+	struct rw_semaphore     header_rwsem;
 	char                    snap_name[RBD_MAX_SNAP_NAME_LEN];
 	u32 cur_snap;	/* index+1 of current snapshot within snap context
 			   0 - for the head */
@@ -457,7 +458,6 @@ static int rbd_header_from_disk(struct rbd_image_header *header,
 	u32 snap_count = le32_to_cpu(ondisk->snap_count);
 	int ret = -ENOMEM;
 
-	init_rwsem(&header->snap_rwsem);
 	header->snap_names_len = le64_to_cpu(ondisk->snap_names_len);
 	header->snapc = kmalloc(sizeof(struct ceph_snap_context) +
 				snap_count *
@@ -558,7 +558,7 @@ static int rbd_header_set_snap(struct rbd_device *dev,
 	struct ceph_snap_context *snapc = header->snapc;
 	int ret = -ENOENT;
 
-	down_write(&header->snap_rwsem);
+	down_write(&dev->header_rwsem);
 
 	if (!snap_name ||
 	    !*snap_name ||
@@ -583,7 +583,7 @@ static int rbd_header_set_snap(struct rbd_device *dev,
 
 	ret = 0;
 done:
-	up_write(&header->snap_rwsem);
+	up_write(&dev->header_rwsem);
 	return ret;
 }
 
@@ -850,7 +850,6 @@ static int rbd_do_request(struct request *rq,
 	struct timespec mtime = CURRENT_TIME;
 	struct rbd_request *req_data;
 	struct ceph_osd_request_head *reqhead;
-	struct rbd_image_header *header = &dev->header;
 
 	req_data = kzalloc(sizeof(*req_data), GFP_NOIO);
 	if (!req_data) {
@@ -867,7 +866,7 @@ static int rbd_do_request(struct request *rq,
 
 	dout("rbd_do_request obj=%s ofs=%lld len=%lld\n", obj, len, ofs);
 
-	down_read(&header->snap_rwsem);
+	down_read(&dev->header_rwsem);
 
 	req = ceph_osdc_alloc_request(&dev->client->osdc, flags,
 				      snapc,
@@ -875,7 +874,7 @@ static int rbd_do_request(struct request *rq,
 				      false,
 				      GFP_NOIO, pages, bio);
 	if (!req) {
-		up_read(&header->snap_rwsem);
+		up_read(&dev->header_rwsem);
 		ret = -ENOMEM;
 		goto done_pages;
 	}
@@ -910,7 +909,7 @@ static int rbd_do_request(struct request *rq,
 				snapc,
 				&mtime,
 				req->r_oid, req->r_oid_len);
-	up_read(&header->snap_rwsem);
+	up_read(&dev->header_rwsem);
 
 	if (linger_req) {
 		ceph_osdc_set_request_linger(&dev->client->osdc, req);
@@ -1674,7 +1673,7 @@ static int __rbd_update_snaps(struct rbd_device *rbd_dev)
 	/* resized? */
 	set_capacity(rbd_dev->disk, h.image_size / 512ULL);
 
-	down_write(&rbd_dev->header.snap_rwsem);
+	down_write(&rbd_dev->header_rwsem);
 
 	snap_seq = rbd_dev->header.snapc->seq;
 	if (rbd_dev->header.total_snaps &&
@@ -1699,7 +1698,7 @@ static int __rbd_update_snaps(struct rbd_device *rbd_dev)
 
 	ret = __rbd_init_snaps_header(rbd_dev);
 
-	up_write(&rbd_dev->header.snap_rwsem);
+	up_write(&rbd_dev->header_rwsem);
 
 	return ret;
 }
@@ -2174,6 +2173,7 @@ static ssize_t rbd_add(struct bus_type *bus,
 	spin_lock_init(&rbd_dev->lock);
 	INIT_LIST_HEAD(&rbd_dev->node);
 	INIT_LIST_HEAD(&rbd_dev->snaps);
+	init_rwsem(&rbd_dev->header_rwsem);
 
 	/* generate unique id: find highest unique id, add one */
 	mutex_lock_nested(&ctl_mutex, SINGLE_DEPTH_NESTING);
