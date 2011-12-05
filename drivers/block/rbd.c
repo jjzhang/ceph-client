@@ -1669,13 +1669,13 @@ static int __rbd_update_snaps(struct rbd_device *rbd_dev)
 	if (ret < 0)
 		return ret;
 
+	down_write(&rbd_dev->header_rwsem);
+
 	/* resized? */
 	if (rbd_dev->snap_id == CEPH_NOSNAP) {
 		dout("setting size to %llu sectors", h.image_size / 512ULL);
 		set_capacity(rbd_dev->disk, h.image_size / 512ULL);
 	}
-
-	down_write(&rbd_dev->header_rwsem);
 
 	snap_seq = rbd_dev->header.snapc->seq;
 	if (rbd_dev->header.total_snaps &&
@@ -1782,8 +1782,13 @@ static ssize_t rbd_size_show(struct device *dev,
 			     struct device_attribute *attr, char *buf)
 {
 	struct rbd_device *rbd_dev = dev_to_rbd(dev);
+	sector_t size;
 
-	return sprintf(buf, "%llu\n", (unsigned long long)rbd_dev->header.image_size);
+	down_read(&rbd_dev->header_rwsem);
+	size = get_capacity(rbd_dev->disk);
+	up_read(&rbd_dev->header_rwsem);
+
+	return sprintf(buf, "%llu\n", (unsigned long long) size * 512ULL);
 }
 
 static ssize_t rbd_major_show(struct device *dev,
