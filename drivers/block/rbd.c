@@ -574,7 +574,7 @@ done:
 
 static void rbd_header_free(struct rbd_image_header *header)
 {
-	kfree(header->snapc);
+	ceph_put_snap_context(header->snapc);
 	kfree(header->snap_names);
 	kfree(header->snap_sizes);
 }
@@ -851,15 +851,12 @@ static int rbd_do_request(struct request *rq,
 
 	dout("rbd_do_request obj=%s ofs=%lld len=%lld\n", obj, len, ofs);
 
-	down_read(&dev->header_rwsem);
-
 	req = ceph_osdc_alloc_request(&dev->client->osdc, flags,
 				      snapc,
 				      ops,
 				      false,
 				      GFP_NOIO, pages, bio);
 	if (!req) {
-		up_read(&dev->header_rwsem);
 		ret = -ENOMEM;
 		goto done_pages;
 	}
@@ -894,7 +891,6 @@ static int rbd_do_request(struct request *rq,
 				snapc,
 				&mtime,
 				req->r_oid, req->r_oid_len);
-	up_read(&dev->header_rwsem);
 
 	if (linger_req) {
 		ceph_osdc_set_request_linger(&dev->client->osdc, req);
@@ -1408,6 +1404,7 @@ static void rbd_rq_fn(struct request_queue *q)
 		u64 ofs;
 		int num_segs, cur_seg = 0;
 		struct rbd_req_coll *coll;
+		struct ceph_snap_context *snapc;
 
 		/* peek at request from block layer */
 		if (!rq)
@@ -1434,19 +1431,19 @@ static void rbd_rq_fn(struct request_queue *q)
 
 		spin_unlock_irq(q->queue_lock);
 
-		if (rbd_dev->snap_id != CEPH_NOSNAP) {
-			bool snap_exists;
-			down_read(&rbd_dev->header_rwsem);
-			snap_exists = rbd_dev->snap_exists;
-			up_read(&rbd_dev->header_rwsem);
+		down_read(&rbd_dev->header_rwsem);
 
-			if (!snap_exists) {
-				dout("request for non-existent snapshot");
-				spin_lock_irq(q->queue_lock);
-				__blk_end_request_all(rq, -ENXIO);
-				goto next;
-			}
+		if (rbd_dev->snap_id != CEPH_NOSNAP && !rbd_dev->snap_exists) {
+			up_read(&rbd_dev->header_rwsem);
+			dout("request for non-existent snapshot");
+			spin_lock_irq(q->queue_lock);
+			__blk_end_request_all(rq, -ENXIO);
+			goto next;
 		}
+
+		snapc = ceph_get_snap_context(rbd_dev->header.snapc);
+
+		up_read(&rbd_dev->header_rwsem);
 
 		dout("%s 0x%x bytes at 0x%llx\n",
 		     do_write ? "write" : "read",
@@ -1457,7 +1454,7 @@ static void rbd_rq_fn(struct request_queue *q)
 		if (!coll) {
 			spin_lock_irq(q->queue_lock);
 			__blk_end_request_all(rq, -ENOMEM);
-			goto next;
+			goto next_snapc;
 		}
 
 		do {
@@ -1480,7 +1477,7 @@ static void rbd_rq_fn(struct request_queue *q)
 			/* init OSD command: write or read */
 			if (do_write)
 				rbd_req_write(rq, rbd_dev,
-					      rbd_dev->header.snapc,
+					      snapc,
 					      ofs,
 					      op_size, bio,
 					      coll, cur_seg);
@@ -1503,6 +1500,10 @@ next_seg:
 		if (bp)
 			bio_pair_release(bp);
 		spin_lock_irq(q->queue_lock);
+next_snapc:
+		/* osd_client has it's own reference
+		   to snapc - we don't need it anymore */
+		ceph_put_snap_context(snapc);
 next:
 		rq = blk_fetch_request(q);
 	}
@@ -1687,7 +1688,8 @@ static int __rbd_refresh_header(struct rbd_device *rbd_dev)
 		   if head moves */
 		follow_seq = 1;
 
-	kfree(rbd_dev->header.snapc);
+	/* osd requests may still refer to snapc */
+	ceph_put_snap_context(rbd_dev->header.snapc);
 	kfree(rbd_dev->header.snap_names);
 	kfree(rbd_dev->header.snap_sizes);
 
