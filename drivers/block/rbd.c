@@ -124,7 +124,7 @@ struct rbd_req_coll {
 struct rbd_snap {
 	struct	device		dev;
 	const char		*name;
-	size_t			size;
+	u64			size;
 	struct list_head	node;
 	u64			id;
 };
@@ -1910,7 +1910,7 @@ static ssize_t rbd_snap_size_show(struct device *dev,
 {
 	struct rbd_snap *snap = container_of(dev, struct rbd_snap, dev);
 
-	return sprintf(buf, "%lld\n", (long long)snap->size);
+	return sprintf(buf, "%llu\n", (unsigned long long)snap->size);
 }
 
 static ssize_t rbd_snap_id_show(struct device *dev,
@@ -1919,7 +1919,7 @@ static ssize_t rbd_snap_id_show(struct device *dev,
 {
 	struct rbd_snap *snap = container_of(dev, struct rbd_snap, dev);
 
-	return sprintf(buf, "%lld\n", (long long)snap->id);
+	return sprintf(buf, "%llu\n", (unsigned long long)snap->id);
 }
 
 static DEVICE_ATTR(snap_size, S_IRUGO, rbd_snap_size_show, NULL);
