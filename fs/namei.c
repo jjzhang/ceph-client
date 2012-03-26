@@ -794,8 +794,10 @@ static int follow_automount(struct path *path, unsigned flags,
  * This may only be called in refwalk mode.
  *
  * Serialization is taken care of in namespace.c
+ *
+ * If a mount was followed, set LOOKUP_JUMPED in nd->flags
  */
-static int follow_managed(struct path *path, unsigned flags)
+static int follow_managed(struct path *path, struct nameidata *nd)
 {
 	struct vfsmount *mnt = path->mnt; /* held by caller, must be left alone */
 	unsigned managed;
@@ -839,7 +841,7 @@ static int follow_managed(struct path *path, unsigned flags)
 
 		/* Handle an automount point */
 		if (managed & DCACHE_NEED_AUTOMOUNT) {
-			ret = follow_automount(path, flags, &need_mntput);
+			ret = follow_automount(path, nd->flags, &need_mntput);
 			if (ret < 0)
 				break;
 			continue;
@@ -851,9 +853,11 @@ static int follow_managed(struct path *path, unsigned flags)
 
 	if (need_mntput && path->mnt == mnt)
 		mntput(path->mnt);
-	if (ret == -EISDIR)
-		ret = 0;
-	return ret < 0 ? ret : need_mntput;
+	if (ret < 0 && ret != -EISDIR)
+		return ret;
+	if (need_mntput)
+		nd->flags |= LOOKUP_JUMPED;
+	return 0;
 }
 
 int follow_down_one(struct path *path)
@@ -1212,13 +1216,11 @@ retry:
 
 	path->mnt = mnt;
 	path->dentry = dentry;
-	err = follow_managed(path, nd->flags);
-	if (unlikely(err < 0)) {
+	err = follow_managed(path, nd);
+	if (unlikely(err)) {
 		path_put_conditional(path, nd);
 		return err;
 	}
-	if (err)
-		nd->flags |= LOOKUP_JUMPED;
 	*inode = path->dentry->d_inode;
 	return 0;
 }
@@ -2239,12 +2241,9 @@ static struct file *do_last(struct nameidata *nd, struct path *path,
 	if (open_flag & O_EXCL)
 		goto exit_dput;
 
-	error = follow_managed(path, nd->flags);
-	if (error < 0)
-		goto exit_dput;
-
+	error = follow_managed(path, nd);
 	if (error)
-		nd->flags |= LOOKUP_JUMPED;
+		goto exit_dput;
 
 	error = -ENOENT;
 	if (!path->dentry->d_inode)
