@@ -87,12 +87,18 @@ extern struct super_block *user_get_super(dev_t);
 struct nameidata;
 extern struct file *nameidata_to_filp(struct nameidata *);
 extern void release_open_intent(struct nameidata *);
+struct opendata {
+	struct dentry *dentry;
+	struct vfsmount *mnt;
+	struct file **filp;
+};
 struct open_flags {
 	int open_flag;
 	umode_t mode;
 	int acc_mode;
 	int intent;
 };
+
 extern struct file *do_filp_open(int dfd, const char *pathname,
 		const struct open_flags *op, int lookup_flags);
 extern struct file *do_file_open_root(struct dentry *, struct vfsmount *,
