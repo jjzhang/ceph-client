@@ -1142,8 +1142,8 @@ static struct dentry *__lookup_hash(struct qstr *name, struct dentry *base,
  *  small and for now I'd prefer to have fast path as straight as possible.
  *  It _is_ time-critical.
  */
-static int do_lookup(struct nameidata *nd, struct qstr *name,
-			struct path *path, struct inode **inode)
+static int lookup_fast(struct nameidata *nd, struct qstr *name,
+		       struct path *path, struct inode **inode)
 {
 	struct vfsmount *mnt = nd->path.mnt;
 	struct dentry *dentry, *parent = nd->path.dentry;
@@ -1212,7 +1212,6 @@ unlazy:
 		}
 	}
 
-success:
 	path->mnt = mnt;
 	path->dentry = dentry;
 	err = follow_managed(path, nd);
@@ -1224,6 +1223,17 @@ success:
 	return 0;
 
 need_lookup:
+	return 1;
+}
+
+/* Fast lookup failed, do it the slow way */
+static int lookup_slow(struct nameidata *nd, struct qstr *name,
+		       struct path *path)
+{
+	struct dentry *dentry, *parent;
+	int err;
+
+	parent = nd->path.dentry;
 	BUG_ON(nd->inode != parent->d_inode);
 
 	mutex_lock(&parent->d_inode->i_mutex);
@@ -1232,7 +1242,14 @@ need_lookup:
 	if (IS_ERR(dentry))
 		return PTR_ERR(dentry);
 
-	goto success;
+	path->mnt = nd->path.mnt;
+	path->dentry = dentry;
+	err = follow_managed(path, nd);
+	if (unlikely(err)) {
+		path_put_conditional(path, nd);
+		return err;
+	}
+	return 0;
 }
 
 static inline int may_lookup(struct nameidata *nd)
@@ -1304,21 +1321,26 @@ static inline int walk_component(struct nameidata *nd, struct path *path,
 	 */
 	if (unlikely(type != LAST_NORM))
 		return handle_dots(nd, type);
-	err = do_lookup(nd, name, path, &inode);
+	err = lookup_fast(nd, name, path, &inode);
 	if (unlikely(err)) {
-		terminate_walk(nd);
-		return err;
+		if (err < 0)
+			goto out_err;
+
+		err = lookup_slow(nd, name, path);
+		if (err < 0)
+			goto out_err;
+
+		inode = path->dentry->d_inode;
 	}
-	if (!inode) {
-		path_to_nameidata(path, nd);
-		terminate_walk(nd);
-		return -ENOENT;
-	}
+	err = -ENOENT;
+	if (!inode)
+		goto out_path_put;
+
 	if (should_follow_link(inode, follow)) {
 		if (nd->flags & LOOKUP_RCU) {
 			if (unlikely(unlazy_walk(nd, path->dentry))) {
-				terminate_walk(nd);
-				return -ECHILD;
+				err = -ECHILD;
+				goto out_err;
 			}
 		}
 		BUG_ON(inode != path->dentry->d_inode);
@@ -1327,6 +1349,12 @@ static inline int walk_component(struct nameidata *nd, struct path *path,
 	path_to_nameidata(path, nd);
 	nd->inode = inode;
 	return 0;
+
+out_path_put:
+	path_to_nameidata(path, nd);
+out_err:
+	terminate_walk(nd);
+	return err;
 }
 
 /*
