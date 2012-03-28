@@ -2133,8 +2133,8 @@ static struct file *atomic_open(struct nameidata *nd, struct dentry *dentry,
 	 * Another problem is returing the "right" error value (e.g. for an
 	 * O_EXCL open we want to return EEXIST not EROFS).
 	 */
-	if ((open_flag & (O_CREAT | O_TRUNC)) ||
-	    (open_flag & O_ACCMODE) != O_RDONLY) {
+	if (!*want_write && ((open_flag & (O_CREAT | O_TRUNC)) ||
+			     (open_flag & O_ACCMODE) != O_RDONLY)) {
 		error = mnt_want_write(nd->path.mnt);
 		if (!error) {
 			*want_write = 1;
@@ -2305,6 +2305,8 @@ static struct file *do_last(struct nameidata *nd, struct path *path,
 	struct file *filp;
 	struct inode *inode;
 	int symlink_ok = 0;
+	struct path save_parent = { .dentry = NULL, .mnt = NULL };
+	bool retried = false;
 	int error;
 
 	nd->flags &= ~LOOKUP_PARENT;
@@ -2368,6 +2370,7 @@ static struct file *do_last(struct nameidata *nd, struct path *path,
 			goto exit;
 	}
 
+retry_lookup:
 	mutex_lock(&dir->d_inode->i_mutex);
 
 	filp = lookup_open(nd, path, od, op, &want_write);
@@ -2462,12 +2465,21 @@ finish_lookup:
 		return NULL;
 	}
 
-	path_to_nameidata(path, nd);
+	if ((nd->flags & LOOKUP_RCU) || nd->path.mnt != path->mnt) {
+		path_to_nameidata(path, nd);
+	} else {
+		save_parent.dentry = nd->path.dentry;
+		save_parent.mnt = mntget(path->mnt);
+		nd->path.dentry = path->dentry;
+
+	}
 	nd->inode = inode;
 
 	error = complete_walk(nd);
-	if (error)
+	if (error) {
+		path_put(&save_parent);
 		return ERR_PTR(error);
+	}
 	error = -EISDIR;
 	if ((open_flag & O_CREAT) && S_ISDIR(inode->i_mode))
 		goto exit;
@@ -2492,6 +2504,19 @@ common:
 		goto exit;
 	od->mnt = nd->path.mnt;
 	filp = finish_open(od, nd->path.dentry, NULL);
+	if (IS_ERR(filp) && PTR_ERR(filp) == -EOPENSTALE) {
+		error = -ESTALE;
+		if (!save_parent.dentry || retried)
+			goto exit;
+		BUG_ON(save_parent.dentry != dir);
+		path_put(&nd->path);
+		nd->path = save_parent;
+		nd->inode = dir->d_inode;
+		save_parent.mnt = NULL;
+		save_parent.dentry = NULL;
+		retried = true;
+		goto retry_lookup;
+	}
 	if (IS_ERR(filp))
 		goto out;
 	error = open_check_o_direct(filp);
@@ -2510,6 +2535,7 @@ opened:
 out:
 	if (want_write)
 		mnt_drop_write(nd->path.mnt);
+	path_put(&save_parent);
 	path_put(&nd->path);
 	return filp;
 

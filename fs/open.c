@@ -737,7 +737,6 @@ cleanup_all:
 	f->f_path.dentry = NULL;
 	f->f_path.mnt = NULL;
 cleanup_file:
-	put_filp(f);
 	dput(dentry);
 	mntput(mnt);
 	return ERR_PTR(error);
@@ -757,15 +756,16 @@ cleanup_file:
 struct file *finish_open(struct opendata *od, struct dentry *dentry,
 			 int (*open)(struct inode *, struct file *))
 {
-	struct file *filp;
-
-	filp = od->filp;
-	od->filp = NULL;
+	struct file *res;
 
 	mntget(od->mnt);
 	dget(dentry);
 
-	return do_dentry_open(dentry, od->mnt, filp, open, current_cred());
+	res = do_dentry_open(dentry, od->mnt, od->filp, open, current_cred());
+	if (!IS_ERR(res))
+		od->filp = NULL;
+
+	return res;
 }
 EXPORT_SYMBOL(finish_open);
 
@@ -809,7 +809,9 @@ struct file *dentry_open(struct dentry *dentry, struct vfsmount *mnt, int flags,
 
 	f->f_flags = flags;
 	res = do_dentry_open(dentry, mnt, f, NULL, cred);
-	if (!IS_ERR(res)) {
+	if (IS_ERR(res)) {
+		put_filp(f);
+	} else {
 		int error = open_check_o_direct(f);
 		if (error) {
 			fput(res);

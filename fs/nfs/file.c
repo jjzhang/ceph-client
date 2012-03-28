@@ -935,7 +935,7 @@ out:
 
 out_drop:
 	d_drop(dentry);
-	err = -ESTALE;
+	err = -EOPENSTALE;
 	goto out_put_ctx;
 }
 
