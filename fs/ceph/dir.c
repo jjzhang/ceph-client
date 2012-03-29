@@ -642,37 +642,17 @@ struct file *ceph_atomic_open(struct inode *dir, struct dentry *dentry,
 	struct dentry *res = NULL;
 	struct file *filp;
 
-	if (!(flags & O_CREAT)) {
-		if (dentry->d_name.len > NAME_MAX)
-			return ERR_PTR(-ENAMETOOLONG);
+	dout("atomic_open %p dentry %p '%.*s'\n",
+	     dir, dentry, dentry->d_name.len, dentry->d_name.name);
 
-		err = ceph_init_dentry(dentry);
-		if (err < 0)
-			return ERR_PTR(err);
+	if (dentry->d_name.len > NAME_MAX)
+		return ERR_PTR(-ENAMETOOLONG);
 
-		return ceph_lookup_open(dir, dentry, od, flags, mode);
-	}
+	err = ceph_init_dentry(dentry);
+	if (err < 0)
+		return ERR_PTR(err);
 
-	if (d_unhashed(dentry)) {
-		res = ceph_lookup(dir, dentry, NULL);
-		if (IS_ERR(res))
-			return ERR_CAST(res);
-
-		if (res)
-			dentry = res;
-	}
-
-	/* We don't deal with positive dentries here */
-	if (dentry->d_inode) {
-		finish_no_open(od, res);
-		return NULL;
-	}
-
-	*created = true;
-	filp = ceph_lookup_open(dir, dentry, od, flags, mode);
-	dput(res);
-
-	return filp;
+	return ceph_lookup_open(dir, dentry, od, flags, mode);
 }
 
 /*
