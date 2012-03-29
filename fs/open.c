@@ -644,10 +644,23 @@ static inline int __get_file_write_access(struct inode *inode,
 	return error;
 }
 
-static struct file *__dentry_open(struct dentry *dentry, struct vfsmount *mnt,
-					struct file *f,
-					int (*open)(struct inode *, struct file *),
-					const struct cred *cred)
+int open_check_o_direct(struct file *f)
+{
+	/* NB: we're sure to have correct a_ops only after f_op->open */
+	if (f->f_flags & O_DIRECT) {
+		if (!f->f_mapping->a_ops ||
+		    ((!f->f_mapping->a_ops->direct_IO) &&
+		    (!f->f_mapping->a_ops->get_xip_mem))) {
+			return -EINVAL;
+		}
+	}
+	return 0;
+}
+
+static struct file *do_dentry_open(struct dentry *dentry, struct vfsmount *mnt,
+				   struct file *f,
+				   int (*open)(struct inode *, struct file *),
+				   const struct cred *cred)
 {
 	static const struct file_operations empty_fops = {};
 	struct inode *inode;
@@ -703,16 +716,6 @@ static struct file *__dentry_open(struct dentry *dentry, struct vfsmount *mnt,
 
 	file_ra_state_init(&f->f_ra, f->f_mapping->host->i_mapping);
 
-	/* NB: we're sure to have correct a_ops only after f_op->open */
-	if (f->f_flags & O_DIRECT) {
-		if (!f->f_mapping->a_ops ||
-		    ((!f->f_mapping->a_ops->direct_IO) &&
-		    (!f->f_mapping->a_ops->get_xip_mem))) {
-			fput(f);
-			f = ERR_PTR(-EINVAL);
-		}
-	}
-
 	return f;
 
 cleanup_all:
@@ -734,76 +737,52 @@ cleanup_all:
 	f->f_path.dentry = NULL;
 	f->f_path.mnt = NULL;
 cleanup_file:
-	put_filp(f);
 	dput(dentry);
 	mntput(mnt);
 	return ERR_PTR(error);
 }
 
 /**
- * lookup_instantiate_filp - instantiates the open intent filp
- * @nd: pointer to nameidata
+ * finish_open - finish opening a file
+ * @od: opaque open data
  * @dentry: pointer to dentry
  * @open: open callback
  *
- * Helper for filesystems that want to use lookup open intents and pass back
- * a fully instantiated struct file to the caller.
- * This function is meant to be called from within a filesystem's
- * lookup method.
- * Beware of calling it for non-regular files! Those ->open methods might block
- * (e.g. in fifo_open), leaving you with parent locked (and in case of fifo,
- * leading to a deadlock, as nobody can open that fifo anymore, because
- * another process to open fifo will block on locked parent when doing lookup).
- * Note that in case of error, nd->intent.open.file is destroyed, but the
- * path information remains valid.
+ * This can be used to finish opening a file passed to i_op->atomic_open().
+ *
  * If the open callback is set to NULL, then the standard f_op->open()
  * filesystem callback is substituted.
  */
-struct file *lookup_instantiate_filp(struct nameidata *nd, struct dentry *dentry,
-		int (*open)(struct inode *, struct file *))
+struct file *finish_open(struct opendata *od, struct dentry *dentry,
+			 int (*open)(struct inode *, struct file *))
 {
-	const struct cred *cred = current_cred();
+	struct file *res;
 
-	if (IS_ERR(nd->intent.open.file))
-		goto out;
-	if (IS_ERR(dentry))
-		goto out_err;
-	nd->intent.open.file = __dentry_open(dget(dentry), mntget(nd->path.mnt),
-					     nd->intent.open.file,
-					     open, cred);
-out:
-	return nd->intent.open.file;
-out_err:
-	release_open_intent(nd);
-	nd->intent.open.file = ERR_CAST(dentry);
-	goto out;
+	mntget(od->mnt);
+	dget(dentry);
+
+	res = do_dentry_open(dentry, od->mnt, od->filp, open, current_cred());
+	if (!IS_ERR(res))
+		od->filp = NULL;
+
+	return res;
 }
-EXPORT_SYMBOL_GPL(lookup_instantiate_filp);
+EXPORT_SYMBOL(finish_open);
 
 /**
- * nameidata_to_filp - convert a nameidata to an open filp.
- * @nd: pointer to nameidata
- * @flags: open flags
+ * finish_no_open - finish ->atomic_open() without opening the file
  *
- * Note that this function destroys the original nameidata
+ * @od: opaque open data
+ * @dentry: dentry or NULL (as returned from ->lookup())
+ *
+ * This can be used to set the result of a successful lookup in ->atomic_open().
+ * The filesystem's atomic_open() method shall return NULL after calling this.
  */
-struct file *nameidata_to_filp(struct nameidata *nd)
+void finish_no_open(struct opendata *od, struct dentry *dentry)
 {
-	const struct cred *cred = current_cred();
-	struct file *filp;
-
-	/* Pick up the filp from the open intent */
-	filp = nd->intent.open.file;
-	nd->intent.open.file = NULL;
-
-	/* Has the filesystem initialised the file for us? */
-	if (filp->f_path.dentry == NULL) {
-		path_get(&nd->path);
-		filp = __dentry_open(nd->path.dentry, nd->path.mnt, filp,
-				     NULL, cred);
-	}
-	return filp;
+	od->dentry = dentry;
 }
+EXPORT_SYMBOL(finish_no_open);
 
 /*
  * dentry_open() will have done dput(dentry) and mntput(mnt) if it returns an
@@ -813,7 +792,7 @@ struct file *dentry_open(struct dentry *dentry, struct vfsmount *mnt, int flags,
 			 const struct cred *cred)
 {
 	int error;
-	struct file *f;
+	struct file *f, *res;
 
 	validate_creds(cred);
 
@@ -829,7 +808,17 @@ struct file *dentry_open(struct dentry *dentry, struct vfsmount *mnt, int flags,
 	}
 
 	f->f_flags = flags;
-	return __dentry_open(dentry, mnt, f, NULL, cred);
+	res = do_dentry_open(dentry, mnt, f, NULL, cred);
+	if (IS_ERR(res)) {
+		put_filp(f);
+	} else {
+		int error = open_check_o_direct(f);
+		if (error) {
+			fput(res);
+			res = ERR_PTR(error);
+		}
+	}
+	return res;
 }
 EXPORT_SYMBOL(dentry_open);
 
