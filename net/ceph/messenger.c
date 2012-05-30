@@ -1533,7 +1533,8 @@ static int process_connect(struct ceph_connection *con)
 		pr_err("%s%lld %s connection reset\n",
 		       ENTITY_NAME(con->peer_name),
 		       ceph_pr_addr(&con->peer_addr.in_addr));
-		reset_connection(con);
+		ceph_con_close(con);
+
 		ret = prepare_write_connect(con);
 		if (ret < 0)
 			return ret;
