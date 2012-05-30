@@ -502,6 +502,8 @@ void ceph_con_close(struct ceph_connection *con)
 {
 	dout("con_close %p peer %s\n", con,
 	     ceph_pr_addr(&con->peer_addr.in_addr));
+
+	mutex_lock(&con->mutex);
 	clear_bit(NEGOTIATING, &con->state);
 	clear_bit(CONNECTING, &con->state);
 	clear_bit(CONNECTED, &con->state);
@@ -512,11 +514,13 @@ void ceph_con_close(struct ceph_connection *con)
 	clear_bit(KEEPALIVE_PENDING, &con->flags);
 	clear_bit(WRITE_PENDING, &con->flags);
 
-	mutex_lock(&con->mutex);
+	/* Clear everything out */
 	reset_connection(con);
 	con->peer_global_seq = 0;
 	cancel_delayed_work(&con->work);
+
 	mutex_unlock(&con->mutex);
+
 	queue_con(con);
 }
 EXPORT_SYMBOL(ceph_con_close);
@@ -2372,7 +2376,6 @@ restart:
 	}
 	if (test_bit(CLOSED, &con->state)) { /* e.g. if we are replaced */
 		dout("con_work CLOSED\n");
-		con_close_socket(con);
 		goto done;
 	}
 	if (test_and_clear_bit(OPENING, &con->state)) {
