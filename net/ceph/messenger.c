@@ -2273,8 +2273,7 @@ more:
 			prepare_read_ack(con);
 			break;
 		case CEPH_MSGR_TAG_CLOSE:
-			clear_bit(CONNECTED, &con->state);
-			set_bit(CLOSED, &con->state);   /* fixme */
+			ret = -EIO;
 			goto out;
 		default:
 			goto bad_tag;
