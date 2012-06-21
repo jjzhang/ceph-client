@@ -1472,7 +1472,7 @@ static int process_banner(struct ceph_connection *con)
 		     ceph_pr_addr(&con->msgr->inst.addr.in_addr));
 	}
 
-	return 0;
+	return 1;
 }
 
 static void fail_protocol(struct ceph_connection *con)
@@ -1970,6 +1970,57 @@ static void process_message(struct ceph_connection *con)
 	prepare_read_tag(con);
 }
 
+/*
+ * Initiate the first phase of establishing a connection with
+ * the peer (connecting).  This phase consists of:
+ *     - client requests TCP connection to server
+ *     - server accepts TCP connection from client
+ *     - client sends banner to server
+ *     - server receives and validates client's banner
+ *     - client sends little-endian encoded own socket (IP) address
+ *     - server recieves, validates, and records client's encoded address
+ * If all is well to this point, then we begin processing the
+ * connect response.
+ */
+static int ceph_con_connect(struct ceph_connection *con)
+{
+	set_bit(CONNECTING, &con->state);
+
+	con_out_kvec_reset(con);
+	prepare_write_banner(con);
+	prepare_read_banner(con);
+
+	BUG_ON(con->in_msg);
+	con->in_tag = CEPH_MSGR_TAG_READY;
+	dout("%s initiating connect on %p new state %lu\n",
+		__func__, con, con->state);
+
+	return ceph_tcp_connect(con);
+}
+
+/*
+ * Handle the response from the first phase of establishing a
+ * connection with the peer.  This consists of:
+ *     - server sends banner to client
+ *     - client receives and validates server's banner
+ *     - server sends little-endian encoded own socket (IP) address
+ *     - client recieves, validates, and records server's encoded address
+ *     - server sends little-endian encoded socket (IP) address for client
+ *     - client recieves and records its encoded address supplied by server
+ * If all is well to this point, then we can transition to the
+ * NEGOTIATING state.
+ */
+static int ceph_con_connect_response(struct ceph_connection *con)
+{
+	int ret;
+
+	dout("%s connecting\n", __func__);
+	ret = read_partial_banner(con);
+	if (ret > 0)
+		ret = process_banner(con);
+
+	return ret;
+}
 
 /*
  * Write something to the socket.  Called in a worker thread when the
@@ -1986,17 +2037,7 @@ more:
 
 	/* open the socket first? */
 	if (con->sock == NULL) {
-		set_bit(CONNECTING, &con->state);
-
-		con_out_kvec_reset(con);
-		prepare_write_banner(con);
-		prepare_read_banner(con);
-
-		BUG_ON(con->in_msg);
-		con->in_tag = CEPH_MSGR_TAG_READY;
-		dout("try_write initiating connect on %p new state %lu\n",
-		     con, con->state);
-		ret = ceph_tcp_connect(con);
+		ret = ceph_con_connect(con);
 		if (ret < 0) {
 			con->error_msg = "connect error";
 			goto out;
@@ -2095,12 +2136,8 @@ more:
 	}
 
 	if (test_bit(CONNECTING, &con->state)) {
-		dout("try_read connecting\n");
-		ret = read_partial_banner(con);
+		ret = ceph_con_connect_response(con);
 		if (ret <= 0)
-			goto out;
-		ret = process_banner(con);
-		if (ret < 0)
 			goto out;
 
 		clear_bit(CONNECTING, &con->state);
