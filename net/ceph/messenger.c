@@ -408,6 +408,30 @@ static int con_close_socket(struct ceph_connection *con)
 }
 
 /*
+ * generic get/put
+ */
+static struct ceph_connection *ceph_con_get(struct ceph_connection *con)
+{
+	int nref = __atomic_add_unless(&con->nref, 1, 0);
+
+	dout("con_get %p nref = %d -> %d\n", con, nref, nref + 1);
+
+	return nref ? con : NULL;
+}
+
+static void ceph_con_put(struct ceph_connection *con)
+{
+	int nref = atomic_dec_return(&con->nref);
+
+	BUG_ON(nref < 0);
+	if (nref == 0) {
+		BUG_ON(con->sock);
+		kfree(con);
+	}
+	dout("con_put %p nref = %d -> %d\n", con, nref + 1, nref);
+}
+
+/*
  * Reset a connection.  Discard all incoming and outgoing messages
  * and clear *_seq state.
  */
@@ -501,30 +525,6 @@ EXPORT_SYMBOL(ceph_con_open);
 bool ceph_con_opened(struct ceph_connection *con)
 {
 	return con->connect_seq > 0;
-}
-
-/*
- * generic get/put
- */
-struct ceph_connection *ceph_con_get(struct ceph_connection *con)
-{
-	int nref = __atomic_add_unless(&con->nref, 1, 0);
-
-	dout("con_get %p nref = %d -> %d\n", con, nref, nref + 1);
-
-	return nref ? con : NULL;
-}
-
-void ceph_con_put(struct ceph_connection *con)
-{
-	int nref = atomic_dec_return(&con->nref);
-
-	BUG_ON(nref < 0);
-	if (nref == 0) {
-		BUG_ON(con->sock);
-		kfree(con);
-	}
-	dout("con_put %p nref = %d -> %d\n", con, nref + 1, nref);
 }
 
 /*
