@@ -44,6 +44,42 @@ static inline void ceph_decode_copy(void **p, void *pv, size_t n)
 }
 
 /*
+ * Decode the wire-encoded string at *p into the buffer "s"
+ * provided, whose size is indicated by "size".  Note that "s" can
+ * be a null pointer if size is 0.  If it fits, the resulting string
+ * will always be terminated with '\0'; otherwise the buffer will
+ * be unchanged.
+ *
+ * Returns the length of the encoded string (which may be greater
+ * than or equal to the buffer size).  The return value does not
+ * include the terminating '\0'.
+ *
+ * If the the return value is less than the size provided, *p will
+ * be advanced past the decoded data; otherwise it is unchanged.
+ * This allows for a two call sequence to be used to allocate
+ * sufficient space for the string.
+ *
+ * NB  It is assumed that *p refers to a block of valid memory
+ *     sufficient to hold the length field followed by the number
+ *     of bytes indicated by that field.
+ */
+static inline size_t ceph_decode_string(void **p, char *s, size_t size)
+{
+	size_t len;
+
+	len = get_unaligned_le32(*p);
+	if (size < len + 1)
+		return len;
+
+	if (len)
+		memcpy(s, (char *) *p + sizeof (u32), len);
+	*(s + len) = '\0';
+	*p += sizeof (u32) + len;
+
+	return len;
+}
+
+/*
  * bounds check input.
  */
 static inline int ceph_has_room(void **p, void *end, size_t n)
