@@ -916,6 +916,8 @@ static int rbd_do_request(struct request *rq,
 		goto done_pages;
 	}
 
+	req->r_num_pages = num_pages;
+	req->r_page_alignment = 0;
 	req->r_callback = rbd_cb;
 
 	req_data->rq = rq;
