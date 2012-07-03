@@ -2368,15 +2368,6 @@ static char *rbd_add_parse_args(struct rbd_device *rbd_dev,
 	if (!rbd_dev->image_name)
 		goto out_err;
 
-	/* Create the name of the header object */
-
-	rbd_dev->header_name = kmalloc(rbd_dev->image_name_len
-						+ sizeof (RBD_SUFFIX),
-					GFP_KERNEL);
-	if (!rbd_dev->header_name)
-		goto out_err;
-	sprintf(rbd_dev->header_name, "%s%s", rbd_dev->image_name, RBD_SUFFIX);
-
 	/*
 	 * The snapshot name is optional.  If none is is supplied,
 	 * we use the default value.
@@ -2468,6 +2459,15 @@ static ssize_t rbd_add(struct bus_type *bus,
 	if (rc < 0)
 		goto err_out_client;
 	rbd_dev->pool_id = rc;
+
+	/* Create the name of the header object */
+
+	rbd_dev->header_name = kmalloc(rbd_dev->image_name_len
+						+ sizeof (RBD_SUFFIX),
+					GFP_KERNEL);
+	if (!rbd_dev->header_name)
+		goto err_out_client;
+	sprintf(rbd_dev->header_name, "%s%s", rbd_dev->image_name, RBD_SUFFIX);
 
 	/* register our block device */
 	rc = register_blkdev(0, rbd_dev->name);
