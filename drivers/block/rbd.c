@@ -60,6 +60,8 @@
 
 #define RBD_SNAP_HEAD_NAME	"-"
 
+#define	RBD_IMAGE_ID_LEN_MAX	64
+
 /*
  * An RBD device name will be "rbd#", where the "rbd" comes from
  * RBD_DRV_NAME above, and # is a unique integer identifier.
@@ -161,6 +163,8 @@ struct rbd_device {
 	spinlock_t		lock;		/* queue lock */
 
 	struct rbd_image_header	header;
+	char			*image_id;
+	size_t			image_id_len;
 	char			*image_name;
 	size_t			image_name_len;
 	char			*header_name;
@@ -1862,6 +1866,14 @@ static ssize_t rbd_name_show(struct device *dev,
 	return sprintf(buf, "%s\n", rbd_dev->image_name);
 }
 
+static ssize_t rbd_image_id_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
+{
+	struct rbd_device *rbd_dev = dev_to_rbd_dev(dev);
+
+	return sprintf(buf, "%s\n", rbd_dev->image_id);
+}
+
 static ssize_t rbd_snap_show(struct device *dev,
 			     struct device_attribute *attr,
 			     char *buf)
@@ -1895,6 +1907,7 @@ static DEVICE_ATTR(major, S_IRUGO, rbd_major_show, NULL);
 static DEVICE_ATTR(client_id, S_IRUGO, rbd_client_id_show, NULL);
 static DEVICE_ATTR(pool_id, S_IRUGO, rbd_pool_id_show, NULL);
 static DEVICE_ATTR(name, S_IRUGO, rbd_name_show, NULL);
+static DEVICE_ATTR(image_id, S_IRUGO, rbd_image_id_show, NULL);
 static DEVICE_ATTR(refresh, S_IWUSR, NULL, rbd_image_refresh);
 static DEVICE_ATTR(current_snap, S_IRUGO, rbd_snap_show, NULL);
 static DEVICE_ATTR(create_snap, S_IWUSR, NULL, rbd_snap_add);
@@ -1903,6 +1916,7 @@ static struct attribute *rbd_attrs[] = {
 	&dev_attr_size.attr,
 	&dev_attr_major.attr,
 	&dev_attr_client_id.attr,
+	&dev_attr_image_id.attr,
 	&dev_attr_pool_id.attr,
 	&dev_attr_name.attr,
 	&dev_attr_current_snap.attr,
@@ -2397,6 +2411,69 @@ out_err:
 	return ERR_PTR(ret);
 }
 
+static int rbd_dev_get_image_id(struct rbd_device *rbd_dev)
+{
+	int ret = -ENOMEM;
+	size_t object_name_size;
+	char *object_name;
+	void *response;
+	u64 ver = 0;
+	char *id_buf;
+	void *p;
+	size_t len;
+
+	/*
+	 * First, see if the format 2 image id file exists, and if
+	 * so, get the image's persistent id from it.
+	 */
+	object_name_size = sizeof (RBD_ID_PREFIX) + rbd_dev->image_name_len;
+	object_name = kmalloc(object_name_size, GFP_KERNEL);
+	if (!object_name)
+		return -ENOMEM;
+	sprintf(object_name, "%s%s", RBD_ID_PREFIX, rbd_dev->image_name);
+
+	response = kzalloc(RBD_IMAGE_ID_LEN_MAX, GFP_KERNEL);
+	if (!response)
+		goto out;
+
+	ret = rbd_req_sync_exec(rbd_dev, object_name,
+				"rbd", "get_id",
+				NULL, 0,
+				response, RBD_IMAGE_ID_LEN_MAX,
+				CEPH_OSD_FLAG_READ,
+				&ver);
+	if (ret < 0)
+		goto out;
+
+	/*
+	 * First find out how much room we need for the id, then
+	 * allocate a buffer that size to decode into.  An image
+	 * id for a format 2 rbd image must have non-zero length.
+	 */
+	p = response;
+	len = ceph_decode_string(&p, NULL, 0);
+	if (!len) {
+		ret = -EIO;
+		goto out;
+	}
+	id_buf = kmalloc(len + 1, GFP_KERNEL);
+	if (!id_buf) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	rbd_dev->image_id_len = ceph_decode_string(&p, id_buf, len + 1);
+	BUG_ON(rbd_dev->image_id_len != len);
+	rbd_dev->image_id = id_buf;
+
+	ret = 0;
+out:
+	kfree(response);
+	kfree(object_name);
+
+	return ret;
+}
+
 static ssize_t rbd_add(struct bus_type *bus,
 		       const char *buf,
 		       size_t count)
@@ -2524,6 +2601,7 @@ err_out_client:
 err_put_id:
 	if (pool_name) {
 		kfree(rbd_dev->snap_name);
+		kfree(rbd_dev->image_id);
 		kfree(rbd_dev->header_name);
 		kfree(rbd_dev->image_name);
 		kfree(pool_name);
@@ -2577,6 +2655,7 @@ static void rbd_dev_release(struct device *dev)
 
 	/* done with the id, and with the rbd_dev */
 	kfree(rbd_dev->snap_name);
+	kfree(rbd_dev->image_id);
 	kfree(rbd_dev->header_name);
 	kfree(rbd_dev->image_name);
 	rbd_id_put(rbd_dev);
