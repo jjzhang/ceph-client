@@ -1754,27 +1754,12 @@ static int __rbd_refresh_header(struct rbd_device *rbd_dev)
 	return ret;
 }
 
-static int rbd_init_disk(struct rbd_device *rbd_dev)
+static int rbd_init_disk(struct rbd_device *rbd_dev, u64 image_size)
 {
 	struct gendisk *disk;
 	struct request_queue *q;
 	int rc;
 	u64 segment_size;
-	u64 total_size = 0;
-
-	/* contact OSD, request size info about the object being mapped */
-	rc = rbd_read_header(rbd_dev, &rbd_dev->header);
-	if (rc)
-		return rc;
-
-	/* no need to lock here, as rbd_dev is not registered yet */
-	rc = __rbd_init_snaps_header(rbd_dev);
-	if (rc)
-		return rc;
-
-	rc = rbd_header_set_snap(rbd_dev, &total_size);
-	if (rc)
-		return rc;
 
 	/* create gendisk info */
 	rc = -ENOMEM;
@@ -1814,11 +1799,11 @@ static int rbd_init_disk(struct rbd_device *rbd_dev)
 	rbd_dev->q = q;
 
 	/* finally, announce the disk to the world */
-	set_capacity(disk, total_size / SECTOR_SIZE);
+	set_capacity(disk, image_size / SECTOR_SIZE);
 	add_disk(disk);
 
 	pr_info("%s: added with size 0x%llx\n",
-		disk->disk_name, (unsigned long long)total_size);
+		disk->disk_name, (unsigned long long) image_size);
 	return 0;
 
 out_disk:
@@ -2432,6 +2417,7 @@ static ssize_t rbd_add(struct bus_type *bus,
 	char *pool_name;
 	struct ceph_osd_client *osdc;
 	int rc = -ENOMEM;
+	u64 image_size = 0;
 
 	if (!try_module_get(THIS_MODULE))
 		return -ENODEV;
@@ -2497,10 +2483,26 @@ static ssize_t rbd_add(struct bus_type *bus,
 	/*
 	 * At this point cleanup in the event of an error is the job
 	 * of the sysfs code (initiated by rbd_bus_del_dev()).
-	 *
+	 */
+
+	/* contact OSD, request size info about the object being mapped */
+	rc = rbd_read_header(rbd_dev, &rbd_dev->header);
+	if (rc)
+		goto err_out_bus;
+
+	/* no need to lock here, as rbd_dev is not registered yet */
+	rc = __rbd_init_snaps_header(rbd_dev);
+	if (rc)
+		goto err_out_bus;
+
+	rc = rbd_header_set_snap(rbd_dev, &image_size);
+	if (rc)
+		goto err_out_bus;
+
+	/*
 	 * Set up and announce blkdev mapping.
 	 */
-	rc = rbd_init_disk(rbd_dev);
+	rc = rbd_init_disk(rbd_dev, image_size);
 	if (rc)
 		goto err_out_bus;
 
