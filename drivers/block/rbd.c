@@ -2506,6 +2506,11 @@ static int rbd_dev_header_v1(struct rbd_device *rbd_dev, u64 *image_size)
 static int rbd_dev_header_v2(struct rbd_device *rbd_dev, u64 *image_size)
 {
 	size_t size;
+	int ret;
+	__le64 snapid;
+	void *reply_buf;
+	u64 ver = 0;
+	void *p;
 
 	size = rbd_dev->image_id_len + sizeof (RBD_SUFFIX);
 	rbd_dev->header_name = kmalloc(size, GFP_KERNEL);
@@ -2514,7 +2519,42 @@ static int rbd_dev_header_v2(struct rbd_device *rbd_dev, u64 *image_size)
 	sprintf(rbd_dev->header_name, "%s%s",
 			RBD_HEADER_PREFIX, rbd_dev->image_id);
 
+	/* Get the size and order for the image */
+
+	snapid = cpu_to_le64(CEPH_NOSNAP);
+
+	size = sizeof (u8) + sizeof (__le64);
+	reply_buf = kzalloc(size, GFP_KERNEL);
+	if (!reply_buf)
+		return -ENOMEM;
+
+	ret = rbd_req_sync_exec(rbd_dev, rbd_dev->header_name,
+				"rbd", "get_size",
+				(char *) &snapid, sizeof (snapid),
+				reply_buf, size,
+				CEPH_OSD_FLAG_READ,
+				&ver);
+	dout("  rbd_req_sync_exec(size) -> %d\n", ret);
+	if (ret < 0)
+		goto out_err;
+
+	p = reply_buf;
+
+	rbd_dev->header.obj_order = ceph_decode_8(&p);
+	*image_size = ceph_decode_64(&p);
+
+	printk("order %d image_size %lld\n", rbd_dev->header.obj_order,
+					(long long) image_size);
+	kfree(reply_buf);
+
 	return 0;
+
+out_err:
+	kfree(reply_buf);
+	kfree(rbd_dev->header_name);
+	rbd_dev->header_name = NULL;
+
+	return ret;
 }
 
 /*
