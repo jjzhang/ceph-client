@@ -2474,6 +2474,74 @@ out:
 	return ret;
 }
 
+static int rbd_dev_header_v1(struct rbd_device *rbd_dev, u64 *image_size)
+{
+	int ret;
+	size_t size;
+
+	size = sizeof (RBD_HEADER_PREFIX) + rbd_dev->image_name_len;
+	rbd_dev->header_name = kmalloc(size, GFP_KERNEL);
+	if (!rbd_dev->header_name)
+		return -ENOMEM;
+	sprintf(rbd_dev->header_name, "%s%s",
+			rbd_dev->image_name, RBD_SUFFIX);
+
+	/* contact OSD, request size info about the object being mapped */
+	ret = rbd_read_header(rbd_dev, &rbd_dev->header);
+	if (ret)
+		return ret;
+
+	/* no need to lock here, as rbd_dev is not registered yet */
+	ret = __rbd_init_snaps_header(rbd_dev);
+	if (ret)
+		return ret;
+
+	ret = rbd_header_set_snap(rbd_dev, image_size);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+static int rbd_dev_header_v2(struct rbd_device *rbd_dev, u64 *image_size)
+{
+	size_t size;
+
+	size = rbd_dev->image_id_len + sizeof (RBD_SUFFIX);
+	rbd_dev->header_name = kmalloc(size, GFP_KERNEL);
+	if (!rbd_dev->header_name)
+		return -ENOMEM;
+	sprintf(rbd_dev->header_name, "%s%s",
+			RBD_HEADER_PREFIX, rbd_dev->image_id);
+
+	return 0;
+}
+
+/*
+ * Probe for the existence of the header object for the given rbd
+ * device.  For format 2 images this includes determining the image
+ * id.
+ */
+static int rbd_dev_header_probe(struct rbd_device *rbd_dev, u64 *image_size)
+{
+	int ret;
+
+	/*
+	 * Get the id from the image id object.  If it's not a
+	 * format 2 image, we'll get ENOENT back.  In that case,
+	 * we need to probe to see whether the format 1 header
+	 * exists instead, or whether it's just a non-existent
+	 * image.
+	 */
+	ret = rbd_dev_get_image_id(rbd_dev);
+	if (!ret)
+		return rbd_dev_header_v2(rbd_dev, image_size);
+	else if (ret == -ENOENT)
+		return rbd_dev_header_v1(rbd_dev, image_size);
+
+	return ret;
+}
+
 static ssize_t rbd_add(struct bus_type *bus,
 		       const char *buf,
 		       size_t count)
@@ -2537,27 +2605,8 @@ static ssize_t rbd_add(struct bus_type *bus,
 		goto err_out_client;
 	rbd_dev->pool_id = rc;
 
-	/* Create the name of the header object */
-
-	rbd_dev->header_name = kmalloc(rbd_dev->image_name_len
-						+ sizeof (RBD_SUFFIX),
-					GFP_KERNEL);
-	if (!rbd_dev->header_name)
-		goto err_out_client;
-	sprintf(rbd_dev->header_name, "%s%s", rbd_dev->image_name, RBD_SUFFIX);
-
-	/* contact OSD, request size info about the object being mapped */
-	rc = rbd_read_header(rbd_dev, &rbd_dev->header);
-	if (rc)
-		goto err_out_client;
-
-	/* no need to lock here, as rbd_dev is not registered yet */
-	rc = __rbd_init_snaps_header(rbd_dev);
-	if (rc)
-		goto err_out_client;
-
-	rc = rbd_header_set_snap(rbd_dev, &image_size);
-	if (rc)
+	rc = rbd_dev_header_probe(rbd_dev, &image_size);
+	if (rc < 0)
 		goto err_out_client;
 
 	/* register our block device */
