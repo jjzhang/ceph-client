@@ -80,6 +80,35 @@ static inline size_t ceph_decode_string(void **p, char *s, size_t size)
 }
 
 /*
+ * Allocate a buffer big enough to hold the wire-encoded string, and
+ * decode the string into it.  The resulting string will always be
+ * terminated with '\0'.  If successful, *p will be advanced
+ * past the decoded data.  Also, if lenp is not a null pointer, the
+ * length (not including the terminating '\0') will be recorded in
+ * it.  Note that a zero-length string is a valid return value.
+ *
+ * Returns a pointer to the newly-allocated string buffer, or a
+ * null pointer if memory could not be allocated for the result.
+ * Neither of the arguments is updated if NULL is returned.
+ */
+static inline char *ceph_extract_encoded_string(void **p, size_t *lenp)
+{
+	size_t len;
+	char *buf;
+
+	len = ceph_decode_string(p, NULL, 0);
+	buf = kmalloc(len + 1, GFP_KERNEL);
+	if (!buf)
+		return NULL;
+
+	(void) ceph_decode_string(p, buf, len + 1);
+	if (lenp)
+		*lenp = len;
+
+	return buf;
+}
+
+/*
  * bounds check input.
  */
 static inline int ceph_has_room(void **p, void *end, size_t n)
