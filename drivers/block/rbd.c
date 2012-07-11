@@ -61,6 +61,7 @@
 #define RBD_SNAP_HEAD_NAME	"-"
 
 #define	RBD_IMAGE_ID_LEN_MAX	64
+#define	RBD_OBJ_PREFIX_LEN_MAX	64
 
 /*
  * An RBD device name will be "rbd#", where the "rbd" comes from
@@ -2509,8 +2510,10 @@ static int rbd_dev_header_v2(struct rbd_device *rbd_dev, u64 *image_size)
 	int ret;
 	__le64 snapid;
 	void *reply_buf;
-	u64 ver = 0;
+	u64 ver;
 	void *p;
+	size_t len;
+	void *prefix_buf;
 
 	size = rbd_dev->image_id_len + sizeof (RBD_SUFFIX);
 	rbd_dev->header_name = kmalloc(size, GFP_KERNEL);
@@ -2528,6 +2531,7 @@ static int rbd_dev_header_v2(struct rbd_device *rbd_dev, u64 *image_size)
 	if (!reply_buf)
 		return -ENOMEM;
 
+	ver = 0;
 	ret = rbd_req_sync_exec(rbd_dev, rbd_dev->header_name,
 				"rbd", "get_size",
 				(char *) &snapid, sizeof (snapid),
@@ -2545,6 +2549,47 @@ static int rbd_dev_header_v2(struct rbd_device *rbd_dev, u64 *image_size)
 
 	printk("order %d image_size %lld\n", rbd_dev->header.obj_order,
 					(long long) image_size);
+	kfree(reply_buf);
+
+	/* Get the object prefix (a.k.a. block_name) for the image */
+
+	reply_buf = kzalloc(RBD_OBJ_PREFIX_LEN_MAX, GFP_KERNEL);
+	if (!reply_buf)
+		goto out_err;
+
+	ver = 0;
+	ret = rbd_req_sync_exec(rbd_dev, rbd_dev->header_name,
+				"rbd", "get_object_prefix",
+				NULL, 0,
+				reply_buf, RBD_OBJ_PREFIX_LEN_MAX,
+				CEPH_OSD_FLAG_READ,
+				&ver);
+	if (ret < 0)
+		goto out_err;
+
+	dout("  rbd_req_sync_exec(object_prefix) -> %d\n", ret);
+
+	/*
+	 * First find out how much room we need for the
+	 * object_prefix, then allocate it and fill it in.
+	 */
+	p = reply_buf;
+	len = ceph_decode_string(&p, NULL, 0);
+	if (!len) {
+		ret = -EIO;
+		goto out_err;
+	}
+	prefix_buf = kmalloc(len + 1, GFP_KERNEL);
+	if (!prefix_buf) {
+		ret = -ENOMEM;
+		goto out_err;
+	}
+
+	(void) ceph_decode_string(&p, prefix_buf, len + 1);
+	rbd_dev->header.object_prefix = prefix_buf;
+
+	printk("object_prefix \"%s\"\n", rbd_dev->header.object_prefix);
+
 	kfree(reply_buf);
 
 	return 0;
