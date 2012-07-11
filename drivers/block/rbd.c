@@ -2469,6 +2469,20 @@ static ssize_t rbd_add(struct bus_type *bus,
 		goto err_out_client;
 	sprintf(rbd_dev->header_name, "%s%s", rbd_dev->image_name, RBD_SUFFIX);
 
+	/* contact OSD, request size info about the object being mapped */
+	rc = rbd_read_header(rbd_dev, &rbd_dev->header);
+	if (rc)
+		goto err_out_client;
+
+	/* no need to lock here, as rbd_dev is not registered yet */
+	rc = __rbd_init_snaps_header(rbd_dev);
+	if (rc)
+		goto err_out_client;
+
+	rc = rbd_header_set_snap(rbd_dev, &image_size);
+	if (rc)
+		goto err_out_client;
+
 	/* register our block device */
 	rc = register_blkdev(0, rbd_dev->name);
 	if (rc < 0)
@@ -2483,23 +2497,7 @@ static ssize_t rbd_add(struct bus_type *bus,
 	/*
 	 * At this point cleanup in the event of an error is the job
 	 * of the sysfs code (initiated by rbd_bus_del_dev()).
-	 */
-
-	/* contact OSD, request size info about the object being mapped */
-	rc = rbd_read_header(rbd_dev, &rbd_dev->header);
-	if (rc)
-		goto err_out_bus;
-
-	/* no need to lock here, as rbd_dev is not registered yet */
-	rc = __rbd_init_snaps_header(rbd_dev);
-	if (rc)
-		goto err_out_bus;
-
-	rc = rbd_header_set_snap(rbd_dev, &image_size);
-	if (rc)
-		goto err_out_bus;
-
-	/*
+	 *
 	 * Set up and announce blkdev mapping.
 	 */
 	rc = rbd_init_disk(rbd_dev, image_size);
